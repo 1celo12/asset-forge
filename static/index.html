@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Asset Forge</title>
+<style>
+  :root{--bg:#fff;--fg:#1a1a1a;--mut:#6b6b6b;--line:#ddd;--card:#f6f6f6;--acc:#4f46e5}
+  @media(prefers-color-scheme:dark){:root{--bg:#121212;--fg:#eee;--mut:#9a9a9a;--line:#333;--card:#1c1c1c;--acc:#818cf8}}
+  *{box-sizing:border-box}
+  body{margin:0;font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+  main{max-width:960px;margin:0 auto;padding:16px}
+  h1{font-size:20px;margin:0 0 12px}
+  nav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+  nav button{padding:6px 14px;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:6px;cursor:pointer}
+  nav button.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+  textarea,input,select{width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--fg);font:inherit}
+  textarea{min-height:90px;resize:vertical}
+  .row{display:flex;gap:10px;margin:8px 0;flex-wrap:wrap}
+  .row>label{flex:1;min-width:110px;font-size:13px;color:var(--mut)}
+  .go{padding:9px 20px;border:0;border-radius:6px;background:var(--acc);color:#fff;font:inherit;cursor:pointer}
+  .go:disabled{opacity:.5}
+  #out{margin-top:16px}
+  .preview{border:1px solid var(--line);border-radius:8px;padding:12px;background:#fff;color:#000;overflow:auto}
+  .preview svg{max-width:100%;height:auto;max-height:360px}
+  iframe{width:100%;height:360px;border:0;background:#fff}
+  img.big{max-width:100%;border-radius:8px}
+  pre{background:var(--card);padding:10px;border-radius:6px;overflow:auto;white-space:pre-wrap;font-size:13px}
+  #gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin-top:24px}
+  #gallery img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:6px;border:1px solid var(--line);background:#fff}
+  .err{color:#d33}
+</style>
+</head>
+<body>
+<main>
+  <h1>Asset Forge</h1>
+  <nav id="tabs"></nav>
+  <label style="font-size:13px;color:var(--mut)">Prompt</label>
+  <textarea id="prompt" placeholder="Describe the asset…"></textarea>
+  <div class="row" id="opts"></div>
+  <button class="go" id="go">Generate</button>
+  <div id="out"></div>
+  <div id="gallery"></div>
+</main>
+<script>
+const KINDS={image:'Image',svg:'SVG',html:'HTML/CSS',copy:'Copy'};
+let kind='image', models=[];
+const $=id=>document.getElementById(id);
+const esc=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+function tabs(){
+  $('tabs').innerHTML=Object.entries(KINDS).map(([k,v])=>`<button data-k="${k}" class="${k===kind?'on':''}">${v}</button>`).join('');
+  $('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>{kind=b.dataset.k;tabs();opts()});
+}
+function opts(){
+  if(kind==='image'){
+    $('opts').innerHTML=`<label>Width<select id="w"><option>512<option>768<option>1024</select></label>
+    <label>Height<select id="h"><option>512<option>768<option>1024</select></label>
+    <label>Steps<input id="steps" type="number" value="4" min="1" max="50"></label>
+    <label>Guidance<input id="guid" type="number" value="0" step="0.5" min="0" max="12"></label>
+    <label>Seed (optional)<input id="seed" type="number"></label>`;
+  } else {
+    $('opts').innerHTML=`<label>Model<select id="model">${models.map(m=>`<option>${esc(m)}`).join('')}</select></label>
+    <label>Temperature<input id="temp" type="number" value="0.7" step="0.1" min="0" max="2"></label>`;
+    try{const saved=localStorage.getItem('model'); if(saved&&models.includes(saved)) $('model').value=saved;}catch{}
+    $('model').onchange=()=>{try{localStorage.setItem('model',$('model').value)}catch{}};
+  }
+}
+async function post(url,body){
+  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(j.detail||r.statusText);
+  return j;
+}
+function show(kind,j){
+  const dl=`<p><a href="${j.file}" download>Download</a>${j.seed!=null?` · seed ${j.seed}`:''}</p>`;
+  if(kind==='image') $('out').innerHTML=`<img class="big" src="${j.file}">${dl}`;
+  else if(kind==='svg') $('out').innerHTML=`<div class="preview"><img src="${j.file}" style="max-width:100%;max-height:360px"></div>${dl}<pre>${esc(j.result)}</pre>`;
+  else if(kind==='html'){ $('out').innerHTML=`<iframe sandbox></iframe>${dl}<pre>${esc(j.result)}</pre>`; $('out').querySelector('iframe').srcdoc=j.result; }
+  else $('out').innerHTML=`<pre>${esc(j.result)}</pre>${dl}`;
+}
+$('go').onclick=async()=>{
+  const prompt=$('prompt').value.trim(); if(!prompt) return;
+  $('go').disabled=true; $('out').textContent='Generating… (first image run loads the model and downloads weights)';
+  try{
+    const j = kind==='image'
+      ? await post('/api/image',{prompt,width:+$('w').value,height:+$('h').value,steps:+$('steps').value,guidance:+$('guid').value,seed:$('seed').value?+$('seed').value:null})
+      : await post('/api/text',{kind,prompt,model:$('model').value,temperature:+$('temp').value});
+    show(kind,j); gallery();
+  }catch(e){ $('out').innerHTML=`<p class="err">${esc(String(e.message))}</p>`; }
+  $('go').disabled=false;
+};
+async function gallery(){
+  const j=await (await fetch('/api/outputs')).json();
+  $('gallery').innerHTML=j.files.filter(f=>/\.(png|svg)$/.test(f)).map(f=>`<a href="${f}" target="_blank"><img src="${f}"></a>`).join('');
+}
+(async()=>{
+  try{ models=(await (await fetch('/api/models')).json()).models||[]; }catch{}
+  tabs(); opts(); gallery();
+})();
+</script>
+</body>
+</html>
