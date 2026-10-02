@@ -3,6 +3,8 @@ $port = 8790
 Set-Location $PSScriptRoot
 # Short venv path avoids Windows MAX_PATH errors when loading torch DLLs.
 $env:UV_PROJECT_ENVIRONMENT = "C:\af\venv"
+# Folder Latent Library watches; new images are copied here with embedded generation metadata.
+if (-not $env:LIBRARY_DIR) { $env:LIBRARY_DIR = "$env:USERPROFILE\Documents\Sissies Sweets Assets" }
 
 if (-not (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)) {
     if (-not (Get-Process ollama -ErrorAction SilentlyContinue)) {

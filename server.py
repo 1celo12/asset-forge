@@ -1,15 +1,18 @@
 """Asset Forge: local web-asset generator (Ollama for text/SVG/HTML, diffusers for images)."""
-import contextlib, os, re, time, uuid, threading
+import contextlib, os, re, shutil, time, uuid, threading
 from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from PIL.PngImagePlugin import PngInfo
 from pydantic import BaseModel
 
 OLLAMA = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 IMAGE_MODEL = os.getenv("IMAGE_MODEL", "stabilityai/sdxl-turbo")
+# Folder watched by Latent Library; generated images are copied here (unset = disabled).
+LIBRARY_DIR = Path(os.environ["LIBRARY_DIR"]) if os.getenv("LIBRARY_DIR") else None
 ROOT = Path(__file__).parent
 OUT = ROOT / "outputs"
 OUT.mkdir(exist_ok=True)
@@ -153,8 +156,40 @@ def image(req: ImageReq):
             kwargs["negative_prompt"] = req.negative
         img = pipe(**kwargs).images[0]
     name = f"img-{int(time.time())}-{seed}.png"
-    img.save(OUT / name)
-    return {"file": f"/outputs/{name}", "seed": seed}
+    # A1111-style "parameters" PNG text chunk: the format Latent Library's metadata parser reads.
+    params = f"{req.prompt}\n"
+    if "negative_prompt" in kwargs:
+        params += f"Negative prompt: {req.negative}\n"
+    params += (
+        f"Steps: {req.steps}, Sampler: {SAMPLERS.get(type(pipe.scheduler).__name__, type(pipe.scheduler).__name__)}, "
+        f"CFG scale: {req.guidance}, Seed: {seed}, Size: {kwargs['width']}x{kwargs['height']}, "
+        f"Model: {IMAGE_MODEL.split('/')[-1]}, Version: Asset Forge"
+    )
+    meta = PngInfo()
+    meta.add_text("parameters", params)
+    img.save(OUT / name, pnginfo=meta)
+    in_library = publish_to_library(OUT / name)
+    return {"file": f"/outputs/{name}", "seed": seed, "library": in_library}
+
+
+SAMPLERS = {"EulerAncestralDiscreteScheduler": "Euler a", "EulerDiscreteScheduler": "Euler",
+            "DPMSolverMultistepScheduler": "DPM++ 2M", "DDIMScheduler": "DDIM"}
+
+
+def publish_to_library(path: Path) -> str | None:
+    """Copy a finished image into the Latent Library watched folder (atomic: temp name, then rename)."""
+    if not LIBRARY_DIR:
+        return None
+    try:
+        LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+        dest = LIBRARY_DIR / f"assetforge-{path.name}"
+        tmp = dest.with_name(dest.name + ".tmp")
+        shutil.copyfile(path, tmp)
+        os.replace(tmp, dest)
+        return str(dest)
+    except OSError as e:
+        print(f"Latent Library publish failed: {e}")
+        return None
 
 
 def default_model() -> str:
@@ -171,7 +206,8 @@ def generate_image(prompt: str, width: int = 512, height: int = 512, steps: int 
                    guidance: float = 0.0, seed: int | None = None) -> str:
     """Generate a raster image (hero art, backgrounds) locally. Returns the saved PNG path."""
     r = image(ImageReq(prompt=prompt, width=width, height=height, steps=steps, guidance=guidance, seed=seed))
-    return f"{OUT / Path(r['file']).name} (seed {r['seed']})"
+    lib = f", Latent Library: {r['library']}" if r["library"] else ""
+    return f"{OUT / Path(r['file']).name} (seed {r['seed']}{lib})"
 
 
 @mcp.tool()
